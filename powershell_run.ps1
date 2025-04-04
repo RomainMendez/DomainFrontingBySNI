@@ -1,44 +1,22 @@
-$proxyHost = "2.2.2.2"
-$proxyPort = 8080
+$proxyUri = "http://your.proxy.server:8080"  # Change this to your corporate proxy
 
 $frontingDomain = "somedomain.com"   # The controlled fronting endpoint
 $realTarget = "example.com"      # The real target (SNI)
+# Create Proxy Handler with Windows Authentication
+$handler = New-Object System.Net.Http.HttpClientHandler
+$handler.Proxy = New-Object System.Net.WebProxy($proxyUri, $true)
+$handler.UseDefaultCredentials = $true  # 🔥 Enables NTLM/Kerberos authentication
 
-# Create a TCP connection to the Proxy
-$client = New-Object System.Net.Sockets.TcpClient($proxyHost, $proxyPort)
-$stream = $client.GetStream()
-$writer = New-Object System.IO.StreamWriter($stream)
-$reader = New-Object System.IO.StreamReader($stream)
+# Create HTTP Client
+$client = New-Object System.Net.Http.HttpClient($handler)
 
-# Send an HTTP CONNECT request to establish a tunnel to "bad.com"
-$connectRequest = "CONNECT $frontingDomain`:443 HTTP/1.1`r`n" +
-                  "Host: $frontingDomain`r`n" +
-                  "`r`n"
+# Prepare the HTTP request
+$request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "https://$realTarget")
+$request.Headers.Host = $realTarget  # 🔥 Forces SNI to be set correctly
 
-$writer.Write($connectRequest)
-$writer.Flush()
+# Send request through the authenticated proxy
+$response = $client.SendAsync($request).Result
 
-# Read Proxy Response
-$proxyResponse = $reader.ReadLine()
-if (-not $proxyResponse.Contains("200")) {
-    Write-Host "Proxy failed to establish connection: $proxyResponse"
-    exit
-}
-
-# Upgrade to TLS over the Proxy
-$sslStream = New-Object System.Net.Security.SslStream($stream, $false, {$true})
-$sslStream.AuthenticateAsClient($realTarget)  # 🔥 This sets the SNI to `good.com`
-
-# Now Send the Real HTTP Request
-$writer = New-Object System.IO.StreamWriter($sslStream)
-$writer.WriteLine("GET / HTTP/1.1")
-$writer.WriteLine("Host: $realTarget")  # 🔥 Host header must match `good.com`
-$writer.WriteLine("Connection: close")
-$writer.WriteLine()
-$writer.Flush()
-
-# Read Response
-$response = New-Object System.IO.StreamReader($sslStream)
-$responseText = $response.ReadToEnd()
-
-Write-Output $responseText
+# Output response
+$response.StatusCode
+$response.Content.ReadAsStringAsync().Result
